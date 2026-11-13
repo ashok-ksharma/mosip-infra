@@ -9,27 +9,39 @@ import logging
 import glob
 import traceback
 
-def read_token(response):
-    cookies = response.headers['Set-Cookie'].split(';')
-    for cookie in cookies:
-        key = cookie.split('=')[0]
-        value = cookie.split('=')[1]
-        if key == 'Authorization':
-            return value
+class FatalError(Exception):
+    '''
+    Error after which the run cannot continue (network down, authentication failed,
+    too many consecutive failures). The run stops with exit code 1.
+    '''
+    pass
 
-    return None
+def read_token(response):
+    '''
+    Read the Authorization token from the Set-Cookie header of an authentication response.
+    Raises FatalError when there is no token, because nothing can be sent without one.
+    '''
+    set_cookie = response.headers.get('Set-Cookie')
+    if set_cookie:
+        for cookie in set_cookie.split(';'):
+            parts = cookie.strip().split('=', 1)
+            if len(parts) == 2 and parts[0] == 'Authorization':
+                return parts[1]
+
+    raise FatalError('Authentication failed. HTTP %s. Response: %s' % (response.status_code, response.text[:500]))
 
 def myprint(msg, name='full', name2='last'):
     '''
     name: Logger name. 
     name2: Optional name of second logger
     '''
+    text = msg if isinstance(msg, str) else pprint.pformat(msg, width=80)
     log1 = logging.getLogger(name)
-    log1.info(pprint.pformat(msg, width=80))
+    log1.info(text)
 
     if name2 is not None:  # Same info repeated here
         log2 = logging.getLogger(name2)
-        log2.info(pprint.pformat(msg, width=80))
+        log2.info(text)
 
 def get_timestamp(seconds_offset=None):
     '''
@@ -40,7 +52,7 @@ def get_timestamp(seconds_offset=None):
     if seconds_offset is not None:
         delta = dt.timedelta(seconds=seconds_offset)
 
-    ts = dt.datetime.utcnow() + delta
+    ts = dt.datetime.now(dt.timezone.utc) + delta
     ms = ts.strftime('%f')[0:3]
     s = ts.strftime('%Y-%m-%dT%H:%M:%S') + '.%sZ' % ms
     return s

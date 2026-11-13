@@ -1,1 +1,4 @@
 *.log
+failed_*.txt
+remaining_*.txt
+venv/
