@@ -23,7 +23,7 @@ To fix this, such packets are restarted from the securezone stage. They then pas
 | **Up to Quality Classifier** (before Create Draft) | Resume from its current stage. It passes Create Draft normally. | Reprocessor |
 | **Already published** (Finalization completed, Credential Requestor, Message Sender, Printing) | Resume from its current stage. No draft is needed. | Reprocessor |
 | **PAUSED**: stopped by a pause rule for a set time | No action. In the default configuration, packets are paused after Packet Classifier, which is **before** Create Draft. When the pause ends, the workflow manager job applies the pause rule's resume action:<br>- `RESUME_PROCESSING`: the packet becomes RESUMABLE and the Reprocessor continues it from where it paused.<br>- `RESUME_FROM_BEGINNING`: the packet restarts from Packet Uploader.<br>- `STOP_PROCESSING`: the packet ends as REJECTED (default rule for a hotlisted operator).<br>In the first two cases the packet passes Create Draft and gets a new draft. | Workflow manager job, then Reprocessor |
-| **PAUSED_FOR_ADDITIONAL_INFO**: waiting for a correction packet | No action. In the default configuration, additional information is requested only at Quality Classifier, which is **before** Create Draft. When the correction packet is processed, the workflow manager marks the original packet RESUMABLE and the Reprocessor continues it from where it paused, so its next stage is Create Draft and it gets a new draft. If no correction packet arrives in time, the workflow manager job applies the packet's default resume action. | Workflow manager, then Reprocessor |
+| **PAUSED_FOR_ADDITIONAL_INFO**: waiting for a correction packet | No action. In the default configuration, additional information is requested only at Quality Classifier, which is **before** Create Draft. When the correction packet is processed, the workflow manager marks the original packet RESUMABLE and the Reprocessor continues it from where it paused, so its next stage is Create Draft and it gets a new draft. If no correction packet arrives within the wait time set in the camel route (`PAUSE_FOR`, default 15 days), the workflow manager job marks the packet REJECTED. | Workflow manager, then Reprocessor |
 | Finished (PROCESSED, FAILED, REJECTED) | None | — |
 
 ## 3. Role of each component during the change
@@ -42,17 +42,26 @@ Only the Reprocessor must stay stopped until the script has finished. Otherwise 
 The workflow manager can run during the script: when a pause ends, it only marks the packet RESUMABLE in the database and sends nothing. The Reprocessor sends RESUMABLE packets on, and it is stopped. The workflow manager is also needed to complete the restarted packets.
 
 ## 4. Steps
-### Before the maintenance window
-1. **Review customisations** against section 5 and adjust the query if needed.
-2. **Choose `FROM_TS`**: the oldest last-activity time (`latest_trn_dtimes`) of packets to restart. Base it on the longest time a packet can stay in the pipeline in your deployment (for example while waiting for manual adjudication). If a packet can stay up to 2 months, set `FROM_TS` to 2 months before the deployment, so those packets are also restarted from securezone. Packets with no activity since before `FROM_TS` are not picked, and the Reprocessor would resume them without a new draft. So set `FROM_TS` at or before the result of this query, which shows the oldest in-progress packet:
+Choose the approach from the value of `securezone.routing.enabled` in the deployed `registration-processor-default.properties` (mosip-config). If the property is not set, the value is `true`.
+
+| Approach | When |
+|---|---|
+| **Approach 1** | `securezone.routing.enabled=true` (default) |
+| **Approach 2** | `securezone.routing.enabled=false` |
+
+### Approach 1: securezone routing enabled (default)
+#### Before the maintenance window
+1. **Choose the approach**: check `securezone.routing.enabled` in the deployed `registration-processor-default.properties` (not set means `true`). Use Approach 1 for `true` and Approach 2 for `false`.
+2. **Review customisations** against section 5 and adjust the query if needed.
+3. **Choose `FROM_TS`**: the oldest last-activity time (`latest_trn_dtimes`) of packets to restart. Base it on the longest time a packet can stay in the pipeline in your deployment (for example while waiting for manual adjudication). If a packet can stay up to 2 months, set `FROM_TS` to 2 months before the deployment, so those packets are also restarted from securezone. Packets with no activity since before `FROM_TS` are not picked, and the Reprocessor would resume them without a new draft. So set `FROM_TS` at or before the result of this query, which shows the oldest in-progress packet:
    ```sql
    SELECT min(latest_trn_dtimes) FROM regprc.registration
    WHERE status_code IN ('PROCESSING', 'REPROCESS', 'RESUMABLE');
    ```
-3. **Validate in a lower environment**: on the old version, keep packets stuck at different stages (before Create Draft, after Quality Classifier, at Finalization, PAUSED). Then follow all the steps in section 4: deploy the draft changes and run the utility. Check that every packet reaches PROCESSED and that the restarted ones have a new draft. Include a packet that was already sent to ABIS (at or after Bio Dedupe): after the restart, the ABIS must accept the new request with a new reference ID, and the packet must pass Bio Dedupe without matching its own earlier entry.
-4. **Install the script** on a machine that can reach the API gateway and the `mosip_regprc` database (see the **Prerequisites** section of the reprocess script README).
+4. **Validate in a lower environment**: on the old version, keep packets stuck at different stages (before Create Draft, after Quality Classifier, at Finalization, PAUSED). Then follow all the steps in section 4: deploy the draft changes and run the utility. Check that every packet reaches PROCESSED and that the restarted ones have a new draft. Include a packet that was already sent to ABIS (at or after Bio Dedupe): after the restart, the ABIS must accept the new request with a new reference ID, and the packet must pass Bio Dedupe without matching its own earlier entry. Use the same `securezone.routing.enabled` value as production, so that the chosen approach is the one validated.
+5. **Install the script** on a machine that can reach the API gateway and the `mosip_regprc` database (see the **Prerequisites** section of the reprocess script README).
 
-### During the maintenance window
+#### During the maintenance window
 | # | Step | Check |
 |---|---|---|
 | 1 | **Stop traffic**: block packet upload and sync, or scale down the packet receiver. | No new rows in `regprc.registration` |
@@ -68,6 +77,26 @@ The workflow manager can run during the script: when a pause ends, it only marks
 | 11 | **Start the Reprocessor.** | Running |
 | 12 | **Allow traffic** again. | New packets received |
 | 13 | **Validate** (section 7). | All checks pass |
+
+### Approach 2: securezone routing disabled
+Follow all the steps of Approach 1. Only the points below differ.
+
+**How the flag changes processing:** when the script calls securezone, securezone marks the packet SUCCESS at `SecurezoneNotificationStage` in both cases.
+- **Enabled:** securezone also sends the packet to the next stage, so it is processed immediately, during the script run.
+- **Disabled:** securezone does not send it. The packet waits at securezone SUCCESS, and the Reprocessor sends it on once it is started (step 11) and the packet has been idle for `registration.processor.reprocess.elapse.time` (default 15 minutes).
+
+**What differs when disabled:**
+
+| Item | Difference |
+|---|---|
+| Steps | None. The Reprocessor stays off until step 11, as for enabled routing. |
+| Query | None (see below). |
+| When restarted packets move | Only after step 11, in Reprocessor batches (`registration.processor.reprocess.fetchsize`, default 2500, every few minutes). |
+| End-to-end check (section 6) and "During the run" check (section 7) | Use the Approach 2 checks there: packets wait at securezone `SUCCESS` until step 11. `CREATE_DRAFT` rows appear only after the Reprocessor has started. |
+| "After the run" and final validation (section 7) | Same checks; allow more time, because packets move in Reprocessor batches. |
+| Retry limit | Packets whose `reg_process_retry_count` is above `registration.processor.reprocess.attempt.count` (default 20) are not picked by the Reprocessor and stay at securezone SUCCESS. Handle them as in section 8. |
+
+**Why the same query works:** `SecurezoneNotificationStage` is in the query's last list, so packets at securezone with SUCCESS are never picked by the script; they are left to the Reprocessor. This covers packets that were already waiting at securezone before the deployment and packets the script has just restarted. A restarted packet is also excluded by `CUTOVER_TS`, because securezone sets its `latest_trn_dtimes` to the current time.
 
 ## 5. Query and customisation
 This is the default `query` in `config.py`. Replace `FROM_TS` and `CUTOVER_TS`, and change it only if the country has customised the workflow (see **Customisation** below):
@@ -89,7 +118,7 @@ LIMIT 1000
 | Condition | Meaning |
 |---|---|
 | `status_code IN (...)` | Only packets in progress. Finished and paused packets are left out. |
-| `latest_trn_dtimes` range | Only packets from before the deployment, and not older than `FROM_TS` (see preparation step 2). `CUTOVER_TS` must stay the same for all runs: a restarted packet gets a newer time, so it is not picked again. |
+| `latest_trn_dtimes` range | Only packets from before the deployment, and not older than `FROM_TS` (see preparation step 3). `CUTOVER_TS` must stay the same for all runs: a restarted packet gets a newer time, so it is not picked again. |
 | First `NOT IN` and `NOT (... FinalizationStage ...)` | Leaves out published packets. The Reprocessor completes them. |
 | Last condition | Leaves out packets up to Quality Classifier: the Reprocessor resumes them. **Except failed ones** (`latest_trn_status_code` FAILED / ERROR / REJECTED), which the script restarts. When a stage fails a packet, it sends a message through Kafka to the workflow manager, which sets the final status (`status_code` FAILED or REJECTED). That message was lost when Kafka was cleared, so the packet stays in progress, and the Reprocessor does not pick failed packets. The script restarts it; it is processed again, and either continues, or fails again and this time the workflow manager sets the final status. |
 | `LIMIT 1000` | Batch size. `--loop` repeats until no rows are left. |
@@ -138,13 +167,27 @@ These properties are not part of the query. They decide **the stage a packet sta
 | Query is valid | `./reprocess.py --db --dry-run` | Rows printed, no error |
 | Number of packets to restart | Run the query with `count(*)` and without `LIMIT` | You know how many packets the script will send before starting. Use it to estimate the run time (about count × `delay` seconds) and to spot a wrong query: for example 0, although the "before" counts (step 5) show packets at stages after Quality Classifier (e.g. `DemoDedupeStage`, `BioDedupeStage`, `ManualAdjudicationStage`). |
 | Query uses an index | `ANALYZE regprc.registration;` then `EXPLAIN (ANALYZE, BUFFERS) <query>` | No `Seq Scan on registration` |
-| End-to-end on one packet | `./reprocess.py --registration "<rid>, <process>, <workflow_instance_id>, <iteration>, <source>"` for a packet after Quality Classifier | A `CREATE_DRAFT` row with `SUCCESS` appears in `regprc.registration_transaction`. The packet reaches PROCESSED unless it needs manual adjudication. |
+| End-to-end on one packet | `./reprocess.py --registration "<rid>, <process>, <workflow_instance_id>, <iteration>, <source>"` for a packet after Quality Classifier | **Approach 1:** a `CREATE_DRAFT` row with `SUCCESS` appears in `regprc.registration_transaction` for the RID, and the packet reaches PROCESSED unless it needs manual adjudication. **Approach 2:** the packet is at `SecurezoneNotificationStage` with `SUCCESS`. It moves on, and the `CREATE_DRAFT` row appears, only after the Reprocessor starts (step 11). |
 | Services are up | Registration Processor and ID Repo pods | Healthy |
 
 ## 7. Monitoring and validation
 **During the run:**
 - Follow `out.log` (one line per packet with `SUCCESS` or `FAILED`).
-- Check a few restarted RIDs in `regprc.registration_transaction`: a `CREATE_DRAFT` row with `SUCCESS` should appear.
+- **Approach 1:** restarted packets reach Create Draft during the run. Check the results:
+  ```sql
+  SELECT status_code, count(*) FROM regprc.registration_transaction
+  WHERE trn_type_code = 'CREATE_DRAFT' AND cr_dtimes >= 'CUTOVER_TS'
+  GROUP BY 1;
+  ```
+  Expected: mostly `SUCCESS`, and the count grows during the run.
+- **Approach 2:** restarted packets wait at securezone until the Reprocessor starts (step 11). Check that they are waiting there:
+  ```sql
+  SELECT count(*) FROM regprc.registration
+  WHERE reg_stage_name = 'SecurezoneNotificationStage'
+    AND latest_trn_status_code = 'SUCCESS'
+    AND latest_trn_dtimes >= 'CUTOVER_TS';
+  ```
+  Expected: about the number of packets the script reported as `SUCCESS`. After step 11 this count goes down, and the Approach 1 query starts showing `CREATE_DRAFT` rows.
 
 **"Before" counts** (step 5): in-progress packets per stage and status before the deployment, in the same time range as the script (from `FROM_TS`). Keep the result.
 ```sql
