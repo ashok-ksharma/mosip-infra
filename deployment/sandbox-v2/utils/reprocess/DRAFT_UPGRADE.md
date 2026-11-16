@@ -74,7 +74,7 @@ Choose the approach from the value of `securezone.routing.enabled` in the deploy
 | 8 | **Prepare the query** in `config.py`: replace `FROM_TS` and `CUTOVER_TS`, and apply any customisation from section 5. | — |
 | 9 | **Run the checks** in section 6, including the dry run. | Rows as expected |
 | 10 | **Run the script**: `./reprocess.py --db --loop` | Exit code 0 (or 2, see the reprocess script README) |
-| 11 | **Start the Reprocessor.** | Running |
+| 11 | **Start the Reprocessor.**<br>**Approach 1:** start it only when the Kafka consumer group lag of the Registration Processor stages is back to normal (about 0). If the lag is still high, wait until it comes down. **Why:** a restarted packet that waits in a Kafka queue for longer than `registration.processor.reprocess.elapse.time` (default 15 minutes) looks idle to the Reprocessor. The Reprocessor would send it again while the original message is still in the queue, and the packet would be processed twice.<br>**Approach 2:** start it right after the script; securezone puts nothing in the queue. | Lag normal; Reprocessor running |
 | 12 | **Allow traffic** again. | New packets received |
 | 13 | **Validate** (section 7). | All checks pass |
 
@@ -172,6 +172,7 @@ These properties are not part of the query. They decide **the stage a packet sta
 
 ## 7. Monitoring and validation
 **During the run:**
+- **Approach 1:** monitor the Kafka consumer group lag of the Registration Processor stages. The lag should stay low and not keep growing. If it keeps growing, the script is sending faster than the stages can process: increase `delay` in `config.py`. The lag must be back to normal before step 11.
 - Follow `out.log` (one line per packet with `SUCCESS` or `FAILED`).
 - **Approach 1:** restarted packets reach Create Draft during the run. Check the results:
   ```sql
