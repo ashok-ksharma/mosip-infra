@@ -68,14 +68,29 @@ remaining_file = './remaining.txt'
 # in this order:
 #   reg_id, process, workflow_instance_id, iteration, source
 # Add a LIMIT to process in batches.
-# Default: unfinished packets that have not moved for more than a day.
+#
+# Default: draft upgrade query. Selects in-progress packets that must restart from
+# securezone so that Create Draft creates a new draft:
+#   - packets after Quality Classifier that are not yet published to ID Repo
+#   - packets at Packet Receiver
+#   - packets that failed before Create Draft
+# All other packets are left to the Reprocessor.
+# Before running, replace the placeholders (UTC, e.g. '2026-11-20 18:30:00'):
+#   FROM_TS    : oldest last-activity time of the packets to restart
+#   CUTOVER_TS : time at which traffic and all stages were stopped
+# The query fails until both are replaced.
 # ---------------------------------------------------------------------------
 query = """
 SELECT reg_id, process, workflow_instance_id, iteration, source
 FROM regprc.registration
-WHERE latest_trn_status_code IN ('SUCCESS', 'REPROCESS', 'IN_PROGRESS')
-  AND reg_process_retry_count <= 500
-  AND latest_trn_dtimes < (SELECT NOW() - INTERVAL '1 DAY')
-  AND status_code NOT IN ('PROCESSED', 'FAILED', 'REJECTED')
+WHERE status_code IN ('PROCESSING', 'REPROCESS', 'RESUMABLE')
+  AND latest_trn_dtimes >= 'FROM_TS'
+  AND latest_trn_dtimes <  'CUTOVER_TS'
+  AND reg_stage_name NOT IN ('CredentialRequestorStage', 'MessageSenderStage', 'PrintingStage')
+  AND NOT (reg_stage_name = 'FinalizationStage' AND latest_trn_status_code = 'SUCCESS')
+  AND (reg_stage_name NOT IN ('SecurezoneNotificationStage', 'PacketUploaderStage', 'PacketValidatorStage',
+                              'PacketClassifierStage', 'CMDValidatorStage', 'OperatorValidatorStage',
+                              'SupervisorValidatorStage', 'IntroducerValidatorStage', 'QualityClassifierStage')
+       OR latest_trn_status_code NOT IN ('SUCCESS', 'REPROCESS', 'IN_PROGRESS'))
 LIMIT 1000
 """

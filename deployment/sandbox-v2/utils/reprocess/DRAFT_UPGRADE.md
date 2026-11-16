@@ -62,7 +62,7 @@ The workflow manager can run during the script: when a pause ends, it only marks
 | 5 | **Save the "before" counts**: the number of in-progress packets per stage and status, taken now that everything is stopped and before anything changes. Run the query in section 7 and keep the result. It is used to check the query (section 6) and to compare after the run (section 7). | Result saved |
 | 6 | **Clear the Registration Processor Kafka topics** (delete the messages, or reset the consumer group offsets to latest). | Lag = 0 |
 | 7 | **Deploy the draft changes** (code and mosip-config) as described in the release notes. Start the stages and the workflow manager. Keep the Reprocessor stopped. | Pods healthy |
-| 8 | **Set the query** in `config.py` (section 5), replacing `FROM_TS` and `CUTOVER_TS`. | — |
+| 8 | **Prepare the query** in `config.py`: replace `FROM_TS` and `CUTOVER_TS`, and apply any customisation from section 5. | — |
 | 9 | **Run the checks** in section 6, including the dry run. | Rows as expected |
 | 10 | **Run the script**: `./reprocess.py --db --loop` | Exit code 0 (or 2, see the reprocess script README) |
 | 11 | **Start the Reprocessor.** | Running |
@@ -70,7 +70,7 @@ The workflow manager can run during the script: when a pause ends, it only marks
 | 13 | **Validate** (section 7). | All checks pass |
 
 ## 5. Query and customisation
-Set this as `query` in `config.py`:
+This is the default `query` in `config.py`. Replace `FROM_TS` and `CUTOVER_TS`, and change it only if the country has customised the workflow (see **Customisation** below):
 ```sql
 SELECT reg_id, process, workflow_instance_id, iteration, source
 FROM regprc.registration

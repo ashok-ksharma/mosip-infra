@@ -83,8 +83,20 @@ Any query can be used. It must return these columns, **in this order**:
 | `iteration` | `iteration` |
 | `source` | `source` |
 
+### Default query
+The query is the `query` setting in `config.py`. By default it is the **draft upgrade query**: it selects the in-progress packets that must restart from securezone so that a new draft is created (packets after Quality Classifier not yet published to ID Repo, packets at Packet Receiver, and packets that failed before Create Draft). All other packets are left to the Reprocessor.
+
+Before running, replace the two placeholders in the query (UTC, e.g. `2026-11-20 18:30:00`):
+
+| Placeholder | Value |
+|---|---|
+| `FROM_TS` | Oldest last-activity time (`latest_trn_dtimes`) of the packets to restart |
+| `CUTOVER_TS` | Time at which traffic and all Registration Processor stages were stopped |
+
+Until they are replaced, the query fails with `invalid input syntax for type timestamp`.
+
 ### Changing the query
-The query is the `query` setting in `config.py`. Validate it before use, and change it as per your requirement, as long as it returns the columns in the **Contract** above.
+Validate the query before use, and change it as per your requirement (for example custom stages), as long as it returns the columns in the **Contract** above.
 
 To use a different query:
 1. Edit `query` in `config.py`. Keep the 5 columns above, in the same order.
