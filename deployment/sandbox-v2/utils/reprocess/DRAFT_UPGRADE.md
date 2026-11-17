@@ -60,6 +60,7 @@ Choose the approach from the value of `securezone.routing.enabled` in the deploy
    ```
 4. **Validate in a lower environment**: on the old version, keep packets stuck at different stages (before Create Draft, after Quality Classifier, at Finalization, PAUSED). Then follow all the steps in section 4: deploy the draft changes and run the utility. Check that every packet reaches PROCESSED and that the restarted ones have a new draft. Include a packet that was already sent to ABIS (at or after Bio Dedupe): after the restart, the ABIS must accept the new request with a new reference ID, and the packet must pass Bio Dedupe without matching its own earlier entry. Use the same `securezone.routing.enabled` value as production, so that the chosen approach is the one validated.
 5. **Install the script** on a machine that can reach the API gateway and the `mosip_regprc` database (see the **Prerequisites** section of the reprocess script README).
+6. **Plan the manual adjudication (MA) and manual verification (MV) cases**: ask adjudicators and verifiers to close as many open cases as possible before the window. Check whether the MA / MV system can cancel cases, for the cases that cannot be closed in time. See [ABIS, MA and MV queues](#abis-ma-and-mv-queues).
 
 #### During the maintenance window
 | # | Step | Check |
@@ -69,7 +70,7 @@ Choose the approach from the value of `securezone.routing.enabled` in the deploy
 | 3 | **Stop all Registration Processor stages and the workflow manager** (both consume from Kafka). | No consumers on the regproc Kafka consumer groups |
 | 4 | **Record `CUTOVER_TS`**: the date and time at which steps 1–3 were completed, i.e. when traffic and all stages were stopped, in the same time zone as `latest_trn_dtimes` (normally UTC), e.g. `2026-11-20 18:30:00`. The query restarts only packets last updated before this time. Keep the same value for all runs. | Value noted |
 | 5 | **Save the "before" counts**: the number of in-progress packets per stage and status, taken now that everything is stopped and before anything changes. Run the query in section 7 and keep the result. It is used to check the query (section 6) and to compare after the run (section 7). | Result saved |
-| 6 | **Clear the Registration Processor Kafka topics** (delete the messages, or reset the consumer group offsets to latest). | Lag = 0 |
+| 6 | **Clear the queues**:<br>a. Clear the Registration Processor Kafka topics (delete the messages, or reset the consumer group offsets to latest).<br>b. Clear the ABIS, MA and MV queues in ActiveMQ as described in [ABIS, MA and MV queues](#abis-ma-and-mv-queues). | Kafka lag = 0; ActiveMQ queues empty |
 | 7 | **Deploy the draft changes** (code and mosip-config) as described in the release notes. Start the stages and the workflow manager. Keep the Reprocessor stopped. | Pods healthy |
 | 8 | **Prepare the query** in `config.py`: replace `FROM_TS` and `CUTOVER_TS`, and apply any customisation from section 5. | — |
 | 9 | **Run the checks** in section 6, including the dry run. | Rows as expected |
@@ -77,6 +78,26 @@ Choose the approach from the value of `securezone.routing.enabled` in the deploy
 | 11 | **Start the Reprocessor.**<br>**Approach 1:** start it only when the Kafka consumer group lag of the Registration Processor stages is back to normal (about 0). If the lag is still high, wait until it comes down. **Why:** a restarted packet that waits in a Kafka queue for longer than `registration.processor.reprocess.elapse.time` (default 15 minutes) looks idle to the Reprocessor. The Reprocessor would send it again while the original message is still in the queue, and the packet would be processed twice.<br>**Approach 2:** start it right after the script; securezone puts nothing in the queue. | Lag normal; Reprocessor running |
 | 12 | **Allow traffic** again. | New packets received |
 | 13 | **Validate** (section 7). | All checks pass |
+
+#### ABIS, MA and MV queues
+Packets waiting for ABIS, MA or MV are restarted by the script and send **new** requests. The old requests are not needed any more. The goal is that **no old answer arrives after the upgrade**. Packets do not need to complete: the script restarts them from wherever they stop.
+
+**Recommendation**
+1. **ABIS** (during step 6, after the stages are stopped in step 3):
+   1. Clear the ABIS request queue, so ABIS gets no more work.
+   2. Wait until ABIS has finished the requests it already took: the ABIS response queue stops growing, or the ABIS vendor confirms ABIS is idle. This is usually a few minutes.
+   3. Clear the ABIS response queue.
+2. **MA / MV:**
+   1. Close as many open cases as possible before the window.
+   2. Cancel the remaining cases in the MA / MV system before the deployment. The restarted packet opens a new case when it reaches MA or MV again.
+   3. Clear the MA and MV queues (during step 6).
+
+**Impact if not followed**
+
+| Not done | What happens after the upgrade | Impact |
+|---|---|---|
+| ABIS response queue cleared without waiting for ABIS to finish | ABIS sends the answer to an old request later. The packet continues with it, while the restarted packet also runs. | The same packet runs twice. One run can fail (for example, no draft yet) and the final status can be wrong. |
+| Open MA / MV cases neither closed nor cancelled | An adjudicator or verifier decides an old case after the upgrade. The packet continues with the old decision, while the restarted packet opens a new case. | Two cases for one packet, decided at different times. The packet can end as failed. |
 
 ### Approach 2: securezone routing disabled
 Follow all the steps of Approach 1. Only the points below differ.
