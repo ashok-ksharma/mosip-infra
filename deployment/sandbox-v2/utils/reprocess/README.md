@@ -169,6 +169,70 @@ Example `registrations.txt`:
 
 A registration is successful only when securezone answers "has been forwarded to next stage". Securezone returns HTTP 200 for both outcomes, so the script checks the message text.
 
+## Troubleshooting
+### TLS/SSL handshake failure
+**Symptom:** the run stops at login with a network error that mentions an SSL handshake or protocol, for example:
+```
+RUN STOPPED: Authentication failed. Network error: ... SSLError(... SSLV3_ALERT_HANDSHAKE_FAILURE ...)
+RUN STOPPED: Authentication failed. Network error: ... SSLError(... TLSV1_ALERT_PROTOCOL_VERSION ...)
+RUN STOPPED: Authentication failed. Network error: ... SSLError(... UNSUPPORTED_PROTOCOL ...)
+```
+
+**Cause:** the script connects over HTTPS using the TLS library built into the Python that runs it. If that library does not support the TLS versions or ciphers the server allows, the server refuses the connection. This can happen on any operating system, usually with an older Python or older OS packages. It is not a certificate problem, so `--disable_ssl_verify` does not help.
+
+**Steps:**
+1. Check the TLS library of the Python used by the script (venv activated):
+   ```
+   python -c "import ssl; print(ssl.OPENSSL_VERSION)"
+   ```
+2. Check that the machine can reach the server over HTTPS with another client, for example `curl -v https://<server>/`. If `curl` succeeds and the script fails, the problem is the Python TLS library.
+3. Install a newer Python 3 on the machine, from python.org or the operating system's package manager. Its `ssl` module should use OpenSSL 1.1.1 or later.
+4. Recreate the virtual environment with that Python: delete the `venv` folder and install again as in **Install**. Make sure the new Python is the one used to create the venv.
+5. Repeat step 1 to confirm the new TLS library, then run the script again.
+
+If Python cannot be changed on the machine, run the script from another machine that has a newer Python and can reach the server.
+
+### Server not reachable
+**Symptom:** the run stops at login with a connection error, for example:
+```
+RUN STOPPED: Authentication failed. Network error: ... Connection timed out
+RUN STOPPED: Authentication failed. Network error: ... Name or service not known
+RUN STOPPED: Authentication failed. Network error: ... Connection refused
+```
+
+**Cause:** the server URL is wrong, or the server cannot be reached from this machine. The internal API gateway (`api-internal.<domain>`) is usually reachable only from inside the deployment's network.
+
+**Steps:**
+1. Check `server` in `config.py` or the `--server` value: it must be the base URL, with `https://` and no trailing slash.
+2. Check the connection from the same machine, for example `curl -v https://<server>/`.
+3. If it cannot connect, run the script from a machine inside the deployment's network, or connect this machine to that network (for example over a VPN), then run the script again.
+
+### Certificate verification failure
+**Symptom:** the run stops at login with an error such as:
+```
+RUN STOPPED: Authentication failed. Network error: ... CERTIFICATE_VERIFY_FAILED ...
+```
+
+**Cause:** the server's certificate is self-signed or issued by an internal certificate authority that this machine does not trust.
+
+**Steps:**
+1. Confirm that the server URL is the expected one.
+2. Run with `--disable_ssl_verify`, or set `ssl_verify = False` in `config.py`.
+
+### Login rejected
+**Symptom:** the run stops at login with an HTTP error, for example:
+```
+RUN STOPPED: Authentication failed. HTTP 401 ...
+RUN STOPPED: Authentication failed. HTTP 403 ...
+```
+
+**Cause:** the server was reached, but the credentials were not accepted.
+
+**Steps:**
+1. Check that `REGPROC_CLIENT_PWD` is set in the same shell and holds the secret of `client_id`.
+2. Check `client_id`, `app_id` and `login_with_client_secret` in `config.py`.
+3. Run the script again.
+
 ## Exit codes
 | Code | Meaning | What to do |
 |---|---|---|
